@@ -1,11 +1,13 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { PDFDocument, rgb, degrees } from 'pdf-lib';
 import { Toolbar } from './components/Toolbar';
 import { Sidebar } from './components/Sidebar';
 import { PdfPageView } from './components/PdfPageView';
+import { ToolHubView, ToolType } from './components/ToolHubView';
+import { DedicatedToolModal } from './components/DedicatedToolModal';
 import { ToolMode, PdfDocumentState, Annotation } from './types/pdf';
-import { FileUp, Sparkles, Shield, Layers, Plus, Trash2 } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
 
 // Configure PDF.js worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
@@ -21,6 +23,11 @@ declare global {
 }
 
 export default function App() {
+  // Navigation mode: 'hub' (iLovePDF grid) | 'toolModal' | 'editor' (Acrobat editor)
+  const [currentView, setCurrentView] = useState<'hub' | 'toolModal' | 'editor'>('hub');
+  const [selectedTool, setSelectedTool] = useState<ToolType>('merge');
+
+  // PDF & Editor state
   const [pdfData, setPdfData] = useState<Uint8Array | null>(null);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [docState, setDocState] = useState<PdfDocumentState | null>(null);
@@ -43,6 +50,7 @@ export default function App() {
         zoom: 1.25,
         rotation: 0
       });
+      setCurrentView('editor');
     } catch (err) {
       console.error('Failed to load PDF:', err);
       alert('Error reading PDF document. Please verify the file.');
@@ -72,7 +80,7 @@ export default function App() {
     }
   };
 
-  // 1. DELETE PAGE
+  // Page Organizers
   const handleDeletePage = async (pageIndex: number) => {
     if (!pdfData || !docState || docState.numPages <= 1) return;
     const confirmDelete = confirm(`Are you sure you want to remove Page ${pageIndex + 1}?`);
@@ -83,7 +91,6 @@ export default function App() {
       pdfLibDoc.removePage(pageIndex);
       const newPdfBytes = await pdfLibDoc.save();
 
-      // Clean annotations for that page and adjust index
       setAnnotations(prev => 
         prev
           .filter(a => a.pageIndex !== pageIndex)
@@ -98,19 +105,15 @@ export default function App() {
     }
   };
 
-  // 2. INSERT BLANK PAGE
   const handleAddBlankPage = async (afterPageIndex: number) => {
     if (!pdfData || !docState) return;
 
     try {
       const pdfLibDoc = await PDFDocument.load(pdfData);
       const insertAt = Math.min(Math.max(afterPageIndex + 1, 0), pdfLibDoc.getPageCount());
-      
-      // Standard A4 dimensions in PDF points (595.28 x 841.89)
       pdfLibDoc.insertPage(insertAt, [595.28, 841.89]);
       const newPdfBytes = await pdfLibDoc.save();
 
-      // Shift annotations for shifted pages
       setAnnotations(prev => 
         prev.map(a => a.pageIndex >= insertAt ? { ...a, pageIndex: a.pageIndex + 1 } : a)
       );
@@ -122,7 +125,6 @@ export default function App() {
     }
   };
 
-  // 3. MERGE / APPEND ANOTHER PDF
   const handleAppendPdf = async () => {
     if (!pdfData || !docState) return;
 
@@ -162,7 +164,6 @@ export default function App() {
     }
   };
 
-  // 4. ROTATE SPECIFIC PAGE
   const handleRotatePage = async (pageIndex: number) => {
     if (!pdfData || !docState) return;
 
@@ -179,7 +180,6 @@ export default function App() {
     }
   };
 
-  // 5. REORDER PAGES (MOVE UP / DOWN)
   const handleMovePage = async (fromIndex: number, toIndex: number) => {
     if (!pdfData || !docState || fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
 
@@ -190,7 +190,6 @@ export default function App() {
       pdfLibDoc.insertPage(toIndex, pageToMove);
       const newPdfBytes = await pdfLibDoc.save();
 
-      // Adjust annotations
       setAnnotations(prev => prev.map(a => {
         if (a.pageIndex === fromIndex) return { ...a, pageIndex: toIndex };
         if (fromIndex < toIndex && a.pageIndex > fromIndex && a.pageIndex <= toIndex) {
@@ -208,7 +207,6 @@ export default function App() {
     }
   };
 
-  // Save flattened PDF with pdf-lib
   const handleSavePdf = async () => {
     if (!pdfData || !docState) return;
 
@@ -216,7 +214,6 @@ export default function App() {
       const pdfLibDoc = await PDFDocument.load(pdfData);
       const pages = pdfLibDoc.getPages();
 
-      // Apply annotations to PDF pages
       annotations.forEach((ann) => {
         if (ann.pageIndex >= pages.length) return;
         const page = pages[ann.pageIndex];
@@ -269,8 +266,56 @@ export default function App() {
     }
   };
 
+  // 1. Tool Hub View (iLovePDF Style Grid)
+  if (currentView === 'hub') {
+    return (
+      <ToolHubView
+        onSelectTool={(tool) => {
+          if (tool === 'editor') {
+            handleOpenPdf();
+          } else {
+            setSelectedTool(tool);
+            setCurrentView('toolModal');
+          }
+        }}
+        onOpenDirectEditor={() => {
+          if (docState) setCurrentView('editor');
+          else handleOpenPdf();
+        }}
+      />
+    );
+  }
+
+  // 2. Dedicated Single-Tool View (Merge, Split, Watermark, etc.)
+  if (currentView === 'toolModal') {
+    return (
+      <DedicatedToolModal
+        tool={selectedTool}
+        onBack={() => setCurrentView('hub')}
+        onOpenInFullEditor={(bytes, name) => loadPdfBytes(bytes, name)}
+      />
+    );
+  }
+
+  // 3. Full Acrobat-Grade Interactive Editor
   return (
     <div className="h-screen w-screen flex flex-col bg-[#141414] text-slate-100 overflow-hidden font-sans">
+      <div className="flex items-center justify-between bg-[#111215] px-4 py-1.5 border-b border-[#2d2e36] text-xs">
+        <button
+          onClick={() => setCurrentView('hub')}
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#20222a] hover:bg-[#2b2d38] text-slate-300 hover:text-white font-semibold transition-colors"
+        >
+          <LayoutGrid size={13} className="text-red-500" />
+          <span>All PDF Tools (iLovePDF Grid)</span>
+        </button>
+
+        <span className="font-mono text-slate-400 truncate max-w-sm">
+          Editing: <strong className="text-white">{docState?.fileName || 'Document'}</strong>
+        </span>
+
+        <div className="w-24" />
+      </div>
+
       <Toolbar
         docState={docState}
         toolMode={toolMode}
@@ -320,48 +365,8 @@ export default function App() {
             </main>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-gradient-to-b from-[#181818] to-[#121212]">
-            <div className="max-w-md w-full space-y-6">
-              <div className="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-tr from-red-600 via-rose-600 to-orange-500 p-[2px] shadow-2xl shadow-red-600/30">
-                <div className="w-full h-full bg-[#181818] rounded-[22px] flex items-center justify-center">
-                  <span className="text-4xl font-black text-red-500">P</span>
-                </div>
-              </div>
-
-              <div>
-                <h2 className="text-2xl font-black text-white tracking-tight">NextSem PDF Editor</h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  Professional Desktop PDF Suite for Windows PC • Adobe Acrobat Alternative
-                </p>
-              </div>
-
-              <div 
-                onClick={handleOpenPdf}
-                className="p-8 rounded-2xl border-2 border-dashed border-red-500/40 hover:border-red-500 bg-[#1e1e1e]/60 hover:bg-[#252526] cursor-pointer transition-all group"
-              >
-                <FileUp size={36} className="mx-auto text-red-400 group-hover:scale-110 transition-transform mb-3" />
-                <span className="block text-sm font-bold text-white">Click or Drag PDF here to open</span>
-                <span className="block text-xs text-slate-400 mt-1">Supports all standard PDF documents &amp; forms</span>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3 text-left">
-                <div className="p-3 rounded-xl bg-[#1e1e1e] border border-[#333]">
-                  <Sparkles size={16} className="text-yellow-400 mb-1.5" />
-                  <h4 className="text-xs font-bold text-white">Markup &amp; Draw</h4>
-                  <p className="text-[10px] text-slate-400">Highlight, pen, notes &amp; shapes</p>
-                </div>
-                <div className="p-3 rounded-xl bg-[#1e1e1e] border border-[#333]">
-                  <Shield size={16} className="text-blue-400 mb-1.5" />
-                  <h4 className="text-xs font-bold text-white">Sign &amp; Stamp</h4>
-                  <p className="text-[10px] text-slate-400">Digital signatures &amp; stamps</p>
-                </div>
-                <div className="p-3 rounded-xl bg-[#1e1e1e] border border-[#333]">
-                  <Layers size={16} className="text-emerald-400 mb-1.5" />
-                  <h4 className="text-xs font-bold text-white">Page Manager</h4>
-                  <p className="text-[10px] text-slate-400">Add, delete, rotate &amp; merge</p>
-                </div>
-              </div>
-            </div>
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#181818]">
+            <p className="text-slate-400 text-sm">No document open. Please select a PDF.</p>
           </div>
         )}
       </div>
